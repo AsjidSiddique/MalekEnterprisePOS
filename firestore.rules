@@ -1,0 +1,81 @@
+rules_version = '2';
+
+// Malek Enterprise POS — Firestore security rules.
+// Model: everything is admin-only (custom claim `admin: true`) except a few deliberately public documents.
+// Server code (API routes) uses the Admin SDK, which bypasses these rules — that is how licence keys are
+// generated and how POS check-ins write data. Deploy with:  firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // ── Public website content ────────────────────────────────
+    // Only published releases are readable by visitors (queries must filter on status == "published").
+    match /releases/{releaseId} {
+      allow read: if resource.data.status == "published" || isAdmin();
+      allow write: if isAdmin();
+    }
+    match /pricing/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    // Contact details only (mirrored from settings/app on save).
+    match /settings/public {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Contact form: anyone may create one message, with strict shape and size limits. Only admins may read.
+    match /inquiries/{inquiryId} {
+      allow create: if request.resource.data.keys().hasOnly(["name", "email", "phone", "business", "message", "createdAt"])
+        && request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 120
+        && request.resource.data.email is string && request.resource.data.email.matches(".+@.+\\..+") && request.resource.data.email.size() <= 160
+        && request.resource.data.phone is string && request.resource.data.phone.size() <= 30
+        && request.resource.data.business is string && request.resource.data.business.size() <= 160
+        && request.resource.data.message is string && request.resource.data.message.size() >= 10 && request.resource.data.message.size() <= 2000
+        && request.resource.data.createdAt == request.time;
+      allow read, delete: if isAdmin();
+      allow update: if false;
+    }
+
+    // ── Admin-only business data ──────────────────────────────
+    match /settings/{docId} {
+      allow read, write: if isAdmin();
+    }
+    match /customers/{id}     { allow read, write: if isAdmin(); }
+    match /shops/{id}         { allow read, write: if isAdmin(); }
+    match /subscriptions/{id} { allow read, write: if isAdmin(); }
+    match /invoices/{id}      { allow read, write: if isAdmin(); }
+    match /payments/{id}      { allow read, write: if isAdmin(); }
+    match /terminals/{id}     { allow read, write: if isAdmin(); }
+    match /notifications/{id} { allow read, write: if isAdmin(); }
+
+    // Download statistics and private share links. Admins read; only the server writes.
+    // `releaseLinks` (the real URLs of linked files) is deliberately absent: no browser can ever read or write it.
+    match /downloads/{id}  { allow read: if isAdmin(); allow write: if false; }
+    match /shareLinks/{id} { allow read: if isAdmin(); allow write: if false; }
+
+    // Licence documents hold the key hash. Admins can read them; only the server can write them.
+    match /licenses/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Sealed copies of licence keys (so a customer can view their own key in their account). Server-only: no browser,
+    // not even an admin's, can read or write this collection. Only the Admin SDK on the server can open it.
+    match /licenseSecrets/{id} {
+      allow read, write: if false;
+    }
+
+    // Audit log is append-only. Entries must be attributed to the signed-in admin.
+    match /auditLogs/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Everything else is denied by default.
+  }
+}

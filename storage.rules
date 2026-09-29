@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// Release files live at releases/{releaseId}/{fileName}.
+// Files are PRIVATE: only admins can read or write them through Firebase. Visitors download through the site's own
+// /api/download route, which hands out signed links that expire after five minutes. That way a raw file path is useless
+// to anyone, and a draft or archived build can never be fetched directly.
+// Deploy with:  firebase deploy --only storage
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    match /releases/{releaseId}/{fileName} {
+      allow read: if isAdmin();
+      // Uploads up to 2 GiB. Keep in sync with MAX_UPLOAD_BYTES in src/services/releaseService.ts.
+      allow create, update: if isAdmin() && request.resource.size < 2 * 1024 * 1024 * 1024;
+      allow delete: if isAdmin();
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
